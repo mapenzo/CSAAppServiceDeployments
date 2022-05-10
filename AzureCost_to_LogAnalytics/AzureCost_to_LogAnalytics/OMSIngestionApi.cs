@@ -10,6 +10,7 @@ public class AzureLogAnalytics
     public String SharedKey { get; set; }
     public String ApiVersion { get; set; }
     public String LogType { get; set; }
+
     public AzureLogAnalytics(String workspaceId, String sharedKey, String logType, String apiVersion = "2016-04-01")
     {
         this.WorkspaceId = workspaceId;
