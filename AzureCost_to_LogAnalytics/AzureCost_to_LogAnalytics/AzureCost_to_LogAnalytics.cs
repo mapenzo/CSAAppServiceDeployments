@@ -1,20 +1,13 @@
+using Microsoft.Azure.Services.AppAuthentication;
+using Microsoft.Azure.WebJobs;
+using Microsoft.Extensions.Logging;
+using Microsoft.Rest;
+using Newtonsoft.Json;
 using System;
 using System.Net.Http;
 using System.Net.Http.Headers;
-using System.Runtime.CompilerServices;
-using System.Security.Cryptography.X509Certificates;
 using System.Text;
-using System.Text.RegularExpressions;
-using Microsoft.Azure.WebJobs;
-using Microsoft.Azure.WebJobs.Host;
-using Microsoft.Extensions.Logging;
-using Microsoft.IdentityModel.Clients.ActiveDirectory;
-using Microsoft.Rest;
-using Newtonsoft.Json;
-using System.Linq;
-using System.IO;
-using System.Data;
-using Microsoft.Azure.Services.AppAuthentication;
+using System.Threading.Tasks;
 
 namespace AzureCost_to_LogAnalytics
 {
@@ -29,7 +22,7 @@ namespace AzureCost_to_LogAnalytics
         private static string AuthToken { get; set; }
         private static TokenCredentials TokenCredentials { get; set; }
 
-        public static async void callAPIPage(string scope, string skipToken, string workspaceid, string workspacekey, string logName, ILogger log, string myJson)
+        public static async Task CallAPIPage(string scope, string skipToken, string workspaceid, string workspacekey, string logName, ILogger log, string myJson)
         {
             var azureServiceTokenProvider = new AzureServiceTokenProvider();
             string AuthToken = await azureServiceTokenProvider.GetAccessTokenAsync("https://management.azure.com/");
@@ -84,7 +77,7 @@ namespace AzureCost_to_LogAnalytics
                     string nextLink = result.properties.nextLink.ToString();
                     skipToken = nextLink.Split('&')[1];
                     Console.WriteLine(skipToken);
-                    callAPIPage(scope, skipToken, workspaceid, workspacekey, logName, log, myJson);
+                    await CallAPIPage(scope, skipToken, workspaceid, workspacekey, logName, log, myJson);
                 }
             }
 
@@ -92,7 +85,7 @@ namespace AzureCost_to_LogAnalytics
 
 
         [FunctionName("DailyCostLoad")]
-        public static async void Run([TimerTrigger("0 0 12 * * *")]TimerInfo myTimer, ILogger log)
+        public static async Task Run([TimerTrigger("0 0 12 * * *")]TimerInfo myTimer, ILogger log)
         {
             DateTime start = DateTime.Now.AddDays(-1);
 
@@ -165,9 +158,9 @@ namespace AzureCost_to_LogAnalytics
                     // HTTP Post
                     response = await client.PostAsync("/" + scope + "/providers/Microsoft.CostManagement/query?api-version=2019-11-01", new StringContent(myJson, Encoding.UTF8, "application/json"));
 
-                    QueryResults result = Newtonsoft.Json.JsonConvert.DeserializeObject<QueryResults>(response.Content.ReadAsStringAsync().Result);
-
-                    
+                    var content = await response.Content.ReadAsStringAsync();
+                    QueryResults result = JsonConvert.DeserializeObject<QueryResults>(content);
+                                        
                     jsonResult = "[";
                     for (int i = 0; i < result.properties.rows.Length; i++)
                     {
@@ -236,7 +229,7 @@ namespace AzureCost_to_LogAnalytics
                             if (!string.IsNullOrEmpty(nextLink))
                             {
                                 string skipToken = nextLink.Split('&')[1];
-                                callAPIPage(scope, skipToken, workspaceid, workspacekey, logName, log, myJson);
+                                await CallAPIPage(scope, skipToken, workspaceid, workspacekey, logName, log, myJson);
                             }
 
                             //return new OkObjectResult(jsonResult);

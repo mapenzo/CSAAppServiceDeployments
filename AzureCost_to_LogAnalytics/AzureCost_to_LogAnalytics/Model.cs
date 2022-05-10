@@ -30,5 +30,13 @@ namespace AzureCost_to_LogAnalytics
         public string type { get; set; }
     }
 
-
+    public class CostDataLogEntry
+    {
+        public double PreTaxCost { get; set; }
+        public string Date { get; set; }
+        public string ResourceId { get; set; }
+        public string ResourceType { get; set; }
+        public string SubscriptionName { get; set; }
+        public string ResourceGroup { get; set; }
+    }
 }
