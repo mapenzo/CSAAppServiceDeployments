@@ -27,7 +27,7 @@ namespace AzureCost_to_LogAnalytics
 
         public static string JsonResult { get; set; }
 
-        public static async Task CallAPIPage(string scope, string skipToken, string workspaceid, string workspacekey, string logName, ILogger log, string myJson)
+        private static async Task CallAPIPage(string scope, string skipToken, string workspaceid, string workspacekey, string logName, ILogger log, string myJson)
         {
             var azureServiceTokenProvider = new AzureServiceTokenProvider();
             string AuthToken = await azureServiceTokenProvider.GetAccessTokenAsync("https://management.azure.com/");
@@ -116,10 +116,6 @@ namespace AzureCost_to_LogAnalytics
                 var azureServiceTokenProvider = new AzureServiceTokenProvider();
                 string AuthToken = await azureServiceTokenProvider.GetAccessTokenAsync("https://management.azure.com/");
 
-                log.LogInformation("token: {token}", AuthToken);
-
-                Console.WriteLine(AuthToken);
-
                 using var client = new HttpClient();
                 // Setting Authorization.  
                 client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", AuthToken);
@@ -136,43 +132,9 @@ namespace AzureCost_to_LogAnalytics
                 string start = startTime.ToString("MM/dd/yyyy");
                 string end = endTime.ToString("MM/dd/yyyy");
 
-                string myJson = @"{
-                        'dataset': {
-                            'aggregation': {
-                            'totalCost': {
-                                'function': 'Sum',
-                                'name': 'PreTaxCost'
-                            }
-                        },
-                        'granularity': 'Daily',
-                        'grouping': [
-                            {
-                                'name': 'ResourceId',
-                                'type': 'Dimension'
-                            },
-                            {
-                                'name': 'ResourceType',
-                                'type': 'dimension'
-                            },
-                            {
-                                'name': 'SubscriptionName',
-                                'type': 'dimension'
-                            },
-                            {
-                                'name': 'ResourceGroup',
-                                'type': 'dimension'
-                            }
-                        ]
-                    },
-                    'timePeriod': {
-                        'from': '" + start + @"',
-                        'to': '" + end + @"'
-                    },
-                    'timeframe': 'Custom',
-                    'type': 'Usage'
-                }";
+                string costQueryJson = CostQueryBuilder.Build(start, end);
 
-                log.LogInformation($"Cost Query: {myJson}");
+                log.LogInformation($"Cost Query: {costQueryJson}");
 
                 log.LogInformation("WorkspaceId: {ws}", workspaceid);
                 log.LogInformation("WorkspaceKey: {wsk}", workspacekey);
@@ -190,9 +152,7 @@ namespace AzureCost_to_LogAnalytics
                     // HTTP Post
                     string endpoint = string.Concat("/", scope.Trim(), "/providers/Microsoft.CostManagement/query?api-version=2019-11-01");
 
-                    log.LogInformation("endpoint -> {endpoint}", endpoint);
-
-                    var response = await client.PostAsync(endpoint, new StringContent(myJson, Encoding.UTF8, "application/json"));
+                    var response = await client.PostAsync(endpoint, new StringContent(costQueryJson, Encoding.UTF8, "application/json"));
 
                     var content = await response.Content.ReadAsStringAsync();
 
@@ -212,55 +172,7 @@ namespace AzureCost_to_LogAnalytics
                     if (!string.IsNullOrEmpty(nextLink))
                     {
                         string skipToken = nextLink.Split('&')[1];
-                        await CallAPIPage(scope, skipToken, workspaceid, workspacekey, logName, log, myJson);
-                    }
-
-                    JsonResult = "[";
-                    for (int i = 0; i < result.properties.rows.Length; i++)
-                    {
-                        object[] row;
-                        try
-                        {
-                            row = result.properties.rows[i];
-                            double cost = row[0].AsDouble();
-                            string sDate = row[1].AsString();
-                            string sResourceId = row[2].AsString();
-                            string sResourceType = row[3].AsString();
-                            string sSubscriptionName = row[4].AsString();
-                            string sResourceGroup = row[5].AsString();
-
-                            if (i == 0)
-                            {
-                                JsonResult += $"{{\"PreTaxCost\": {cost},\"Date\": \"{sDate}\",\"ResourceId\": \"{sResourceId}\",\"ResourceType\": \"{sResourceType}\",\"SubscriptionName\": \"{sSubscriptionName}\",\"ResourceGroup\": \"{sResourceGroup}\"}}";
-                            }
-                            else
-                            {
-                                JsonResult += $",{{\"PreTaxCost\": {cost},\"Date\": \"{sDate}\",\"ResourceId\": \"{sResourceId}\",\"ResourceType\": \"{sResourceType}\",\"SubscriptionName\": \"{sSubscriptionName}\",\"ResourceGroup\": \"{sResourceGroup}\"}}";
-                            }
-
-                            JsonResult += "]";
-
-                            log.LogInformation($"Cost Data: {JsonResult}");
-
-                            logAnalytics.Post(JsonResult);
-
-                            string continuationToken = result.properties.nextLink?.ToString();
-
-                            if (!string.IsNullOrEmpty(continuationToken))
-                            {
-                                string skipToken = continuationToken.Split('&')[1];
-                                await CallAPIPage(scope, skipToken, workspaceid, workspacekey, logName, log, myJson);
-                            }
-
-                            //return new OkObjectResult(jsonResult);
-                        }
-                        catch (Exception ex)
-                        {
-                            log.LogError(ex, "An error ocurred processing your request.");
-                            Console.ForegroundColor = ConsoleColor.Red;
-                            Console.WriteLine(ex.ToString());
-                            Console.ResetColor();
-                        }
+                        await CallAPIPage(scope, skipToken, workspaceid, workspacekey, logName, log, costQueryJson);
                     }
                 }
             }

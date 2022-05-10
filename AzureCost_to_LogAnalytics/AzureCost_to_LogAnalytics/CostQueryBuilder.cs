@@ -1,16 +1,10 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
-
-namespace AzureCost_to_LogAnalytics
+﻿namespace AzureCost_to_LogAnalytics
 {
-    internal class Constants
+    internal class CostQueryBuilder
     {
-        internal static class Json
+        public static string Build(string from, string to)
         {
-            public const string Default = @"{
+            return @"{
                         'dataset': {
                             'aggregation': {
                             'totalCost': {
@@ -39,8 +33,8 @@ namespace AzureCost_to_LogAnalytics
                         ]
                     },
                     'timePeriod': {
-                        'from': '{start}@',
-                        'to': '{end}@'
+                        'from': '" + from + @"',
+                        'to': '" + to + @"'
                     },
                     'timeframe': 'Custom',
                     'type': 'Usage'
