@@ -1,0 +1,10 @@
+{
+  "profiles": {
+    "AzureCost_to_LogAnalytics": {
+      "commandName": "Project",
+      "environmentVariables": {
+        "AZURE_FUNCTIONS_ENVIRONMENT": "Development"
+      }
+    }
+  }
+}

@@ -1,4 +1,6 @@
+using AzureCost_to_LogAnalytics.Configuration;
 using AzureCost_to_LogAnalytics.Extensions;
+using AzureCost_to_LogAnalytics.Services;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Azure.Services.AppAuthentication;
@@ -8,7 +10,6 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Rest;
 using Newtonsoft.Json;
 using System;
-using System.Linq;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Text;
@@ -16,163 +17,75 @@ using System.Threading.Tasks;
 
 namespace AzureCost_to_LogAnalytics
 {
-    public static class PreLoadLogAnalytics
+    public class PreLoadLogAnalytics
     {
-        private const string DefaultScope = "subscriptions/0d6c1317-f328-4b12-b90c-bb478eb29e74";
-
-        private static string[] scopes;
-        private static readonly string workspaceid = Environment.GetEnvironmentVariable("workspaceid") ?? "705378a9-ccb6-4dc4-b314-5f932376f1ee";
-        private static readonly string workspacekey = Environment.GetEnvironmentVariable("workspacekey") ?? "SREVgO+OzvMO66C5zuLG4UXtiKxQNtqecR9ixrAUsgnuTpGORNK/u+J4nWKHq6T8cDgXktyble08mmz1PdwMvw==";
-        private static readonly string logName = Environment.GetEnvironmentVariable("logName") ?? "AzureCostAnamolies";
+        private string[] scopes;
+        private string workspaceId;
+        private string workspaceKey;
+        private string logName;
 
         public static string JsonResult { get; set; }
 
-        private static async Task CallAPIPage(string scope, string skipToken, string workspaceid, string workspacekey, string logName, ILogger log, string myJson)
+        private readonly IAppSettingsService settingsService;
+        private readonly ILogAnalyticsService logAnalyticsService;
+        private readonly HttpClient client;
+
+        public PreLoadLogAnalytics(
+            IAppSettingsService settingsService,           
+            IHttpClientFactory httpClientFactory,
+            ILogAnalyticsService logAnalyticsService)
         {
-            var azureServiceTokenProvider = new AzureServiceTokenProvider();
-            string AuthToken = await azureServiceTokenProvider.GetAccessTokenAsync("https://management.azure.com/");
+            this.settingsService = settingsService;
+            this.logAnalyticsService = logAnalyticsService;
 
-            using var client = new HttpClient();
-            // Setting Authorization.  
-            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", AuthToken);
+            SetEnvironmentVariables();
 
-            // Setting Base address.  
-            client.BaseAddress = new Uri("https://management.azure.com");
-
-            // Setting content type.  
-            client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
-
-            AzureLogAnalytics logAnalytics = new AzureLogAnalytics(
-                workspaceId: $"{workspaceid}",
-                sharedKey: $"{workspacekey}",
-                logType: $"{logName}");
-
-            string newURL = "/" + scope + "/providers/Microsoft.CostManagement/query?api-version=2019-11-01&" + skipToken;
-            var response = await client.PostAsync(newURL, new StringContent(myJson, Encoding.UTF8, "application/json"));
-
-            var content = await response.Content.ReadAsStringAsync();
-
-            if (!response.IsSuccessStatusCode)
-            {
-                log.LogError(content, "An error ocurred processing your request.");
-                return;
-            }
-
-            QueryResults result = JsonConvert.DeserializeObject<QueryResults>(content);
-
-            if (result.properties.rows != null &&
-                result.properties != null ||
-                (result.properties.rows == null || !result.properties.rows.Any()))
-            {
-                log.LogError("There is no data to show.");
-                return;
-            }
-
-            JsonResult = "[";
-            for (int i = 0; i < result.properties.rows.Length; i++)
-            {
-                object[] row = result.properties.rows[i];
-                double cost = Convert.ToDouble(row[0]);
-
-                if (i == 0)
-                {
-                    JsonResult += $"{{\"PreTaxCost\": {cost},\"Date\": \"{row[1]}\",\"ResourceId\": \"{row[2]}\",\"ResourceType\": \"{row[3]}\",\"SubscriptionName\": \"{row[4]}\",\"ResourceGroup\": \"{row[5]}\"}}";
-                }
-                else
-                {
-                    JsonResult += $",{{\"PreTaxCost\": {cost},\"Date\": \"{row[1]}\",\"ResourceId\": \"{row[2]}\",\"ResourceType\": \"{row[3]}\",\"SubscriptionName\": \"{row[4]}\",\"ResourceGroup\": \"{row[5]}\"}}";
-                }
-            }
-
-            JsonResult += "]";
-
-            logAnalytics.Post(JsonResult);
-
-            string nextLink = null;
-            nextLink = result.properties.nextLink.ToString();
-
-            if (!string.IsNullOrEmpty(nextLink))
-            {
-                skipToken = nextLink.Split('&')[1];
-                Console.WriteLine(skipToken);
-                await CallAPIPage(scope, skipToken, workspaceid, workspacekey, logName, log, myJson);
-            }
-
+            client = httpClientFactory.CreateClient(Constants.HttpClientName);
         }
 
+        private void SetEnvironmentVariables()
+        {
+            workspaceId = Environment.GetEnvironmentVariable("workspaceid") ?? settingsService.GetValue("WorkspaceId");
+            workspaceKey = Environment.GetEnvironmentVariable("workspacekey") ?? settingsService.GetValue("WorkspaceKey");
+            logName = Environment.GetEnvironmentVariable("logName") ?? settingsService.GetValue("LogName");
+            scopes = GetScopes(settingsService);
+        }
 
         [FunctionName("PreLoadLogAnalytics")]
-        public static async Task<IActionResult> Run(
-            [HttpTrigger(AuthorizationLevel.Function, "get", "post", Route = null)] HttpRequest req,
-            ILogger log)
+        public async Task<IActionResult> Run(
+            [HttpTrigger(AuthorizationLevel.Function, "post", Route = null)] HttpRequest req, ILogger log)
         {
-
             log.LogInformation($"C# Timer trigger function executed at: {DateTime.Now}");
-
-            scopes = GetScopes();
+            log.LogInformation("Environment: {env}", Environment.GetEnvironmentVariable("AZURE_FUNCTIONS_ENVIRONMENT"));
 
             try
             {
                 var azureServiceTokenProvider = new AzureServiceTokenProvider();
                 string AuthToken = await azureServiceTokenProvider.GetAccessTokenAsync("https://management.azure.com/");
 
-                using var client = new HttpClient();
                 // Setting Authorization.  
                 client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", AuthToken);
 
-                // Setting Base address.  
-                client.BaseAddress = new Uri("https://management.azure.com");
+                string costQueryJson = GetCostsQuery(settingsService);
 
-                // Setting content type.  
-                client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
-
-                DateTime startTime = DateTime.UtcNow.AddDays(-30);
-                DateTime endTime = DateTime.UtcNow;
-
-                string start = startTime.ToString("MM/dd/yyyy");
-                string end = endTime.ToString("MM/dd/yyyy");
-
-                string costQueryJson = CostQueryBuilder.Build(start, end);
-
-                log.LogInformation($"Cost Query: {costQueryJson}");
-
-                log.LogInformation("WorkspaceId: {ws}", workspaceid);
-                log.LogInformation("WorkspaceKey: {wsk}", workspacekey);
-                log.LogInformation("Logname: {lg}", logName);
-
-                AzureLogAnalytics logAnalytics = new(
-                    workspaceId: $"{workspaceid}",
-                    sharedKey: $"{workspacekey}",
-                    logType: $"{logName}");
+                var apiVersion = settingsService.GetValue(nameof(AppSettings.CostManagementApiVersion));
 
                 foreach (string scope in scopes)
                 {
-                    log.LogInformation($"Scope: {scope}");
-
-                    // HTTP Post
-                    string endpoint = string.Concat("/", scope.Trim(), "/providers/Microsoft.CostManagement/query?api-version=2019-11-01");
-
-                    var response = await client.PostAsync(endpoint, new StringContent(costQueryJson, Encoding.UTF8, "application/json"));
-
-                    var content = await response.Content.ReadAsStringAsync();
-
-                    if (!response.IsSuccessStatusCode)
-                    {
-                        return new BadRequestObjectResult(content);
-                    }
-
-                    QueryResults result = JsonConvert.DeserializeObject<QueryResults>(content);
-
-                    JsonResult = LogEntryMapper.Map(result.properties.rows).ToJson();
-                    
-                    logAnalytics.Post(JsonResult);
+                    var result = await SaveCostsToLogAnalyticsAsync(costQueryJson, scope, apiVersion);
 
                     string nextLink = result.properties.nextLink?.ToString();
 
                     if (!string.IsNullOrEmpty(nextLink))
                     {
                         string skipToken = nextLink.Split('&')[1];
-                        await CallAPIPage(scope, skipToken, workspaceid, workspacekey, logName, log, costQueryJson);
+                        while (!string.IsNullOrWhiteSpace(skipToken))
+                        {
+                            result = await SaveCostsToLogAnalyticsAsync(costQueryJson, scope, apiVersion, skipToken);
+                            nextLink = result.properties.nextLink?.ToString();                            
+                            skipToken = !string.IsNullOrWhiteSpace(nextLink) ? nextLink.Split('&')[1] : null;
+                            await Task.Delay(200);
+                        }
                     }
                 }
             }
@@ -188,21 +101,65 @@ namespace AzureCost_to_LogAnalytics
             return new OkObjectResult(JsonResult);
         }
 
-        private static string[] GetScopes()
+        private async Task<QueryResults> SaveCostsToLogAnalyticsAsync(string costQueryJson, string scope, string apiVersion, string skipToken = null)
         {
-            string scopes = Environment.GetEnvironmentVariable("scope");
-            if (scopes != null && scopes.Contains(',', StringComparison.InvariantCultureIgnoreCase))
+            // HTTP Post
+            string endpoint = GetAzureManagementEndpoint(scope, apiVersion, skipToken);
+
+            var httpContent = new StringContent(costQueryJson, Encoding.UTF8, Constants.JsonMediaType);
+
+            var response = await client.PostAsync(endpoint, httpContent);
+
+            var content = await response.Content.ReadAsStringAsync();
+
+            if (!response.IsSuccessStatusCode)
+            {
+                throw new AzureCostManagementApiException(content);
+            }
+
+            QueryResults result = JsonConvert.DeserializeObject<QueryResults>(content);
+
+            JsonResult = LogEntryMapper.Map(result.properties.rows).ToJson();
+
+            await logAnalyticsService.Post(JsonResult);
+
+            return result;
+        }
+
+        private static string GetAzureManagementEndpoint(string scope, string apiVersion, string skipToken = null)
+        {
+            return string.IsNullOrWhiteSpace(skipToken)
+                ? string.Concat("/", scope.Trim(), $"/providers/Microsoft.CostManagement/query?api-version={apiVersion}")
+                : string.Concat("/", scope.Trim(), $"/providers/Microsoft.CostManagement/query?api-version={apiVersion}&{skipToken}");
+        }
+
+        private static string GetCostsQuery(IAppSettingsService settingsService)
+        {
+            var fromDays = settingsService.GetValue($"{nameof(CostQueryTimePeriod)}.{nameof(CostQueryTimePeriod.FromDaysAgo)}").AsDouble();
+            DateTime startTime = DateTime.UtcNow.AddDays(fromDays);
+            DateTime endTime = DateTime.UtcNow;
+
+            string start = startTime.ToString("MM/dd/yyyy");
+            string end = endTime.ToString("MM/dd/yyyy");
+
+            return CostQueryBuilder.Build(start, end);
+        }
+
+        private static string[] GetScopes(IAppSettingsService settingsService)
+        {
+            string scopes = Environment.GetEnvironmentVariable("scope") ?? settingsService.GetValue("Scopes");
+            if (scopes == null)
+            {
+                throw new InvalidProgramException("Scope value is missing.");
+            }
+
+            if (scopes.Contains(',', StringComparison.InvariantCultureIgnoreCase))
             {
                 return scopes.Split(',', StringSplitOptions.RemoveEmptyEntries);
             }
             else
             {
-                var scope = Environment.GetEnvironmentVariable("scope");
-                if (!string.IsNullOrEmpty(scope))
-                {
-                    return new string[] { scope };
-                }
-                return new string[] { DefaultScope };
+                return new string[] { scopes };
             }
         }
     }
