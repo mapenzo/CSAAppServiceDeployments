@@ -24,11 +24,13 @@ namespace AzureCost_to_LogAnalytics
         private string workspaceKey;
         private string logName;
 
-        public static string JsonResult { get; set; }
+        public static string JsonResult { get; internal set; }
 
         private readonly IAppSettingsService settingsService;
         private readonly ILogAnalyticsService logAnalyticsService;
         private readonly HttpClient client;
+
+        private readonly bool isDev = App.Context.IsDevelopment();
 
         public PreLoadLogAnalytics(
             IAppSettingsService settingsService,           
@@ -45,10 +47,10 @@ namespace AzureCost_to_LogAnalytics
 
         private void SetEnvironmentVariables()
         {
-            workspaceId = Environment.GetEnvironmentVariable("workspaceid") ?? settingsService.GetValue("WorkspaceId");
-            workspaceKey = Environment.GetEnvironmentVariable("workspacekey") ?? settingsService.GetValue("WorkspaceKey");
-            logName = Environment.GetEnvironmentVariable("logName") ?? settingsService.GetValue("LogName");
-            scopes = GetScopes(settingsService);
+            workspaceId = isDev ? settingsService.GetValue<AppSettings>(e => e.WorkspaceId) : App.Context.GetVariable("workspaceid");
+            workspaceKey = isDev ? settingsService.GetValue<AppSettings>(e => e.WorkspaceKey) : App.Context.GetVariable("workspacekey");
+            logName = isDev ? settingsService.GetValue<AppSettings>(e => e.LogName) : App.Context.GetVariable("logName");
+            scopes = GetScopes(settingsService, isDev);
         }
 
         [FunctionName("PreLoadLogAnalytics")]
@@ -63,7 +65,6 @@ namespace AzureCost_to_LogAnalytics
                 var azureServiceTokenProvider = new AzureServiceTokenProvider();
                 string AuthToken = await azureServiceTokenProvider.GetAccessTokenAsync("https://management.azure.com/");
 
-                // Setting Authorization.  
                 client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", AuthToken);
 
                 string costQueryJson = GetCostsQuery(settingsService);
@@ -135,7 +136,8 @@ namespace AzureCost_to_LogAnalytics
 
         private static string GetCostsQuery(IAppSettingsService settingsService)
         {
-            var fromDays = settingsService.GetValue($"{nameof(CostQueryTimePeriod)}.{nameof(CostQueryTimePeriod.FromDaysAgo)}").AsDouble();
+            var fromDays = settingsService.GetValue<CostQueryTimePeriod>(e => e.FromDaysAgo).AsDouble();
+
             DateTime startTime = DateTime.UtcNow.AddDays(fromDays);
             DateTime endTime = DateTime.UtcNow;
 
@@ -145,9 +147,9 @@ namespace AzureCost_to_LogAnalytics
             return CostQueryBuilder.Build(start, end);
         }
 
-        private static string[] GetScopes(IAppSettingsService settingsService)
+        private static string[] GetScopes(IAppSettingsService settingsService, bool isDev)
         {
-            string scopes = Environment.GetEnvironmentVariable("scope") ?? settingsService.GetValue("Scopes");
+            string scopes = isDev ? settingsService.GetValue<AppSettings>(e => e.Scopes) : App.Context.GetVariable("scope");
             if (scopes == null)
             {
                 throw new InvalidProgramException("Scope value is missing.");

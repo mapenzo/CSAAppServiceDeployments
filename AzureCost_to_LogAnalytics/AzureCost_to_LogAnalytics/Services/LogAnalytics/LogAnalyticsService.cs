@@ -1,4 +1,5 @@
-﻿using System;
+﻿using AzureCost_to_LogAnalytics.Configuration;
+using System;
 using System.IO;
 using System.Net;
 using System.Security.Cryptography;
@@ -16,6 +17,8 @@ namespace AzureCost_to_LogAnalytics.Services
 
         private readonly IAppSettingsService settingsService;
 
+        private readonly bool isDev = App.Context.IsDevelopment();
+
         public LogAnalyticsService(IAppSettingsService settingsService)
         {
             this.settingsService = settingsService ?? throw new ArgumentNullException(nameof(settingsService));
@@ -23,9 +26,9 @@ namespace AzureCost_to_LogAnalytics.Services
 
         private void SetEnvironmentVariables()
         {
-            workspaceId = Environment.GetEnvironmentVariable("workspaceid") ?? settingsService.GetValue("WorkspaceId");
-            workspaceKey = Environment.GetEnvironmentVariable("workspacekey") ?? settingsService.GetValue("WorkspaceKey");
-            logName = Environment.GetEnvironmentVariable("logName") ?? settingsService.GetValue("LogName");
+            workspaceId = isDev ? settingsService.GetValue<AppSettings>(e => e.WorkspaceId) : App.Context.GetVariable("workspaceid");
+            workspaceKey = isDev ?  settingsService.GetValue<AppSettings>(e => e.WorkspaceKey) : App.Context.GetVariable("workspacekey");
+            logName = isDev ? settingsService.GetValue<AppSettings>(e => e.LogName) : App.Context.GetVariable("logName");
             apiVersion = settingsService.GetValue("LogAnalyticsApiVersion");
         }
 
