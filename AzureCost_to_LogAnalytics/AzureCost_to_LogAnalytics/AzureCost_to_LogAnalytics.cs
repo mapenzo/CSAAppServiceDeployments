@@ -31,7 +31,7 @@ namespace AzureCost_to_LogAnalytics
         }
 
         [FunctionName("DailyCostLoad")]
-        public async Task<IActionResult> Run([TimerTrigger("0 0 12 * * *")] TimerInfo myTimer, ILogger log)
+        public async Task Run([TimerTrigger("0 0 12 * * *")] TimerInfo myTimer, ILogger log)
         {
             TimeSpan start = (DateTime.UtcNow - DateTime.UtcNow.AddDays(-1));
 
@@ -77,11 +77,8 @@ namespace AzureCost_to_LogAnalytics
                 log.LogError(ex, "An error ocurred processing your request.");
                 Console.ForegroundColor = ConsoleColor.Red;
                 Console.WriteLine(ex.ToString());
-                Console.ResetColor();
-                return new BadRequestObjectResult(ex.ToString());
+                Console.ResetColor();                
             }
-
-            return new OkObjectResult(jsonResult);
         }
 
         private static string[] GetScopes(IAppSettingsService settingsService, bool isDev)
