@@ -25,6 +25,7 @@ namespace AzureCost_to_LogAnalytics
             builder.Services.AddSingleton<IAppSettingsService, AppSettingsService>();
             builder.Services.AddSingleton<IDictionaryConverter, DictionaryConverter>();
             builder.Services.AddSingleton<ILogAnalyticsService, LogAnalyticsService>();
+            builder.Services.AddSingleton<IAzureManagmentService, AzureManagmentService>();
 
             builder.Services.AddLogging();
             

@@ -1,247 +1,105 @@
-using Microsoft.Azure.Services.AppAuthentication;
+using AzureCost_to_LogAnalytics.Configuration;
+using AzureCost_to_LogAnalytics.Extensions;
+using AzureCost_to_LogAnalytics.Services;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.Azure.WebJobs;
 using Microsoft.Extensions.Logging;
 using Microsoft.Rest;
-using Newtonsoft.Json;
 using System;
-using System.Net.Http;
-using System.Net.Http.Headers;
-using System.Text;
 using System.Threading.Tasks;
 
 namespace AzureCost_to_LogAnalytics
 {
-    public static class AzureCost_to_LogAnalytics
-    {   
-        //Environment.GetEnvironmentVariable("ClientId")
-        //private static string[] scopes = (Environment.GetEnvironmentVariable("scope")).Split(',');
-        //private static string workspaceid = Environment.GetEnvironmentVariable("workspaceid");
-        //private static string workspacekey = Environment.GetEnvironmentVariable("workspacekey");
-        //private static string logName = Environment.GetEnvironmentVariable("logName");
-        //public static string jsonResult { get; set; }
+    public class AzureCost_to_LogAnalytics
+    {
+        private string[] scopes;
 
-        //private static string AuthToken { get; set; }
-        //private static TokenCredentials TokenCredentials { get; set; }
+        private readonly IAzureManagmentService managmentService;
+        private readonly IAppSettingsService settingsService;
+        private readonly ILogAnalyticsService logAnalyticsService;
 
-        //public static async Task CallAPIPage(string scope, string skipToken, string workspaceid, string workspacekey, string logName, ILogger log, string myJson)
-        //{
-        //    var azureServiceTokenProvider = new AzureServiceTokenProvider();
-        //    string AuthToken = await azureServiceTokenProvider.GetAccessTokenAsync("https://management.azure.com/");
+        private readonly bool isDev = App.Context.IsDevelopment();
 
-        //    using (var client = new HttpClient())
-        //    {
-        //        // Setting Authorization.  
-        //        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", AuthToken);
+        public AzureCost_to_LogAnalytics(
+            IAzureManagmentService managmentService,
+            IAppSettingsService settingsService,
+            ILogAnalyticsService logAnalyticsService)
+        {
+            this.settingsService = settingsService;
+            this.logAnalyticsService = logAnalyticsService;
+            this.managmentService = managmentService;
+        }
 
+        [FunctionName("DailyCostLoad")]
+        public async Task<IActionResult> Run([TimerTrigger("0 0 12 * * *")] TimerInfo myTimer, ILogger log)
+        {
+            TimeSpan start = (DateTime.UtcNow - DateTime.UtcNow.AddDays(-1));
 
-        //        // Setting Base address.  
-        //        client.BaseAddress = new Uri("https://management.azure.com");
-        //        // Setting content type.  
-        //        client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+            log.LogInformation($"C# Timer trigger function executed at: {DateTime.Now}");
+            log.LogInformation("Environment: {env}", Environment.GetEnvironmentVariable("AZURE_FUNCTIONS_ENVIRONMENT"));
 
-        //        // Initialization.  
-        //        HttpResponseMessage response = new HttpResponseMessage();
+            string jsonResult = string.Empty;
 
-        //        AzureLogAnalytics logAnalytics = new AzureLogAnalytics(
-        //            workspaceId: $"{workspaceid}",
-        //            sharedKey: $"{workspacekey}",
-        //            logType: $"{logName}");
+            try
+            {
+                scopes = GetScopes(settingsService, isDev);
 
-        //        string newURL = "/" + scope + "/providers/Microsoft.CostManagement/query?api-version=2019-11-01&" + skipToken;
-        //        response = await client.PostAsync(newURL, new StringContent(myJson, Encoding.UTF8, "application/json"));
-        //        QueryResults result = JsonConvert.DeserializeObject<QueryResults>(response.Content.ReadAsStringAsync().Result);
+                var fromDays = start.TotalDays;
+                var apiVersion = settingsService.GetValue(nameof(AppSettings.CostManagementApiVersion));
 
+                foreach (string scope in scopes)
+                {
+                    var result = await managmentService.GetCostsAsync(fromDays, scope, apiVersion);
 
-        //        jsonResult = "[";
-        //        for (int i = 0; i < result.properties.rows.Length; i++)
-        //        {
-        //            object[] row = result.properties.rows[i];
-        //            double cost = Convert.ToDouble(row[0]);
+                    jsonResult = LogEntryMapper.Map(result.properties.rows).ToJson();
 
-        //            if (i == 0)
-        //            {
-        //                jsonResult += $"{{\"PreTaxCost\": {cost},\"Date\": \"{row[1]}\",\"ResourceId\": \"{row[2]}\",\"ResourceType\": \"{row[3]}\",\"SubscriptionName\": \"{row[4]}\",\"ResourceGroup\": \"{row[5]}\"}}";
-        //            }
-        //            else
-        //            {
-        //                jsonResult += $",{{\"PreTaxCost\": {cost},\"Date\": \"{row[1]}\",\"ResourceId\": \"{row[2]}\",\"ResourceType\": \"{row[3]}\",\"SubscriptionName\": \"{row[4]}\",\"ResourceGroup\": \"{row[5]}\"}}";
-        //            }
-        //        }
+                    await logAnalyticsService.Post(jsonResult);
 
-        //        jsonResult += "]";
+                    string nextLink = result.properties.nextLink?.ToString();
 
-        //        //log.LogInformation($"Cost Data: {jsonResult}");
-        //        logAnalytics.Post(jsonResult);
+                    if (!string.IsNullOrEmpty(nextLink))
+                    {
+                        string skipToken = nextLink.Split('&')[1];
+                        while (!string.IsNullOrWhiteSpace(skipToken))
+                        {
+                            result = await managmentService.GetCostsAsync(fromDays, scope, apiVersion, skipToken);
+                            jsonResult = LogEntryMapper.Map(result.properties.rows).ToJson();
+                            await logAnalyticsService.Post(jsonResult);
+                            nextLink = result.properties.nextLink?.ToString();
+                            skipToken = !string.IsNullOrWhiteSpace(nextLink) ? nextLink.Split('&')[1] : null;
+                            await Task.Delay(200);
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                log.LogError(ex, "An error ocurred processing your request.");
+                Console.ForegroundColor = ConsoleColor.Red;
+                Console.WriteLine(ex.ToString());
+                Console.ResetColor();
+                return new BadRequestObjectResult(ex.ToString());
+            }
 
-        //        if (result.properties.nextLink != null)
-        //        {
-        //            string nextLink = result.properties.nextLink.ToString();
-        //            skipToken = nextLink.Split('&')[1];
-        //            Console.WriteLine(skipToken);
-        //            await CallAPIPage(scope, skipToken, workspaceid, workspacekey, logName, log, myJson);
-        //        }
-        //    }
+            return new OkObjectResult(jsonResult);
+        }
 
-        //}
+        private static string[] GetScopes(IAppSettingsService settingsService, bool isDev)
+        {
+            string scopes = isDev ? settingsService.GetValue<AppSettings>(e => e.Scopes) : App.Context.GetVariable("scope");
+            if (scopes == null)
+            {
+                throw new InvalidProgramException("Scope value is missing.");
+            }
 
-
-        //[FunctionName("DailyCostLoad")]
-        //public static async Task Run([TimerTrigger("0 0 12 * * *")]TimerInfo myTimer, ILogger log)
-        //{
-        //    DateTime start = DateTime.Now.AddDays(-1);
-
-        //    string time = start.ToString("MM/dd/yyyy");
-
-
-        //    log.LogInformation($"C# Timer trigger function executed at: {DateTime.Now}");
-            
-        //    var azureServiceTokenProvider = new AzureServiceTokenProvider();
-        //    string AuthToken = await azureServiceTokenProvider.GetAccessTokenAsync("https://management.azure.com/");
-            
-        //    using (var client = new HttpClient())
-        //    {
-        //        // Setting Authorization.  
-        //        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", AuthToken);
-
-        //        // Setting Base address.  
-        //        client.BaseAddress = new Uri("https://management.azure.com");
-
-        //        // Setting content type.  
-        //        client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
-
-        //        // Initialization.  
-        //        HttpResponseMessage response = new HttpResponseMessage();
-
-        //        string myJson = @"{
-        //            'dataset': {
-        //                'aggregation': {
-        //                'totalCost': {
-        //                    'function': 'Sum',
-        //                    'name': 'PreTaxCost'
-        //                }
-        //            },
-        //            'granularity': 'Daily',
-        //            'grouping': [
-        //                {
-        //                    'name': 'ResourceId',
-        //                    'type': 'Dimension'
-        //                },
-        //                {
-        //                    'name': 'ResourceType',
-        //                    'type': 'dimension'
-        //                },
-        //                {
-        //                    'name': 'SubscriptionName',
-        //                    'type': 'dimension'
-        //                },
-        //                {
-        //                    'name': 'ResourceGroup',
-        //                    'type': 'dimension'
-        //                }
-        //            ]
-        //        },
-        //        'timePeriod': {
-        //            'from': '" + time + @"',
-        //            'to': '" + time + @"'
-        //        },
-        //        'timeframe': 'Custom',
-        //        'type': 'Usage'
-        //    }";
-        //        Console.WriteLine(myJson);
-        //        AzureLogAnalytics logAnalytics = new AzureLogAnalytics(
-        //            workspaceId: $"{workspaceid}",
-        //            sharedKey: $"{workspacekey}",
-        //            logType: $"{logName}");
-
-        //        foreach (string scope in scopes)
-        //        {
-        //            Console.WriteLine(scope);
-        //            // HTTP Post
-        //            response = await client.PostAsync("/" + scope + "/providers/Microsoft.CostManagement/query?api-version=2019-11-01", new StringContent(myJson, Encoding.UTF8, "application/json"));
-
-        //            var content = await response.Content.ReadAsStringAsync();
-        //            QueryResults result = JsonConvert.DeserializeObject<QueryResults>(content);
-                                        
-        //            jsonResult = "[";
-        //            for (int i = 0; i < result.properties.rows.Length; i++)
-        //            {
-        //                object[] row;
-        //                try
-        //                {
-        //                    row = result.properties.rows[i];
-        //                    double cost = Convert.ToDouble(row[0]);
-        //                    string sDate = Convert.ToString(row[1]);
-        //                    string sResourceId;
-        //                    try
-        //                    {
-        //                        sResourceId = Convert.ToString(row[2]);
-        //                    }
-        //                    catch
-        //                    {
-        //                        sResourceId = "";
-        //                    }
-        //                    string sResourceType;
-        //                    try
-        //                    {
-        //                        sResourceType = Convert.ToString(row[3]);
-        //                    }
-        //                    catch
-        //                    {
-        //                        sResourceType = "";
-        //                    }
-        //                    string sSubscriptionName;
-        //                    try
-        //                    {
-        //                        sSubscriptionName = Convert.ToString(row[4]);
-        //                    }
-        //                    catch
-        //                    {
-        //                        sSubscriptionName = "";
-        //                    }
-        //                    string sResourceGroup;
-        //                    try
-        //                    {
-        //                        sResourceGroup = Convert.ToString(row[5]);
-        //                    }
-        //                    catch
-        //                    {
-        //                        sResourceGroup = "";
-        //                    }
-
-
-        //                    if (i == 0)
-        //                    {
-        //                        jsonResult += $"{{\"PreTaxCost\": {cost},\"Date\": \"{sDate}\",\"ResourceId\": \"{sResourceId}\",\"ResourceType\": \"{sResourceType}\",\"SubscriptionName\": \"{sSubscriptionName}\",\"ResourceGroup\": \"{sResourceGroup}\"}}";
-        //                    }
-        //                    else
-        //                    {
-        //                        jsonResult += $",{{\"PreTaxCost\": {cost},\"Date\": \"{sDate}\",\"ResourceId\": \"{sResourceId}\",\"ResourceType\": \"{sResourceType}\",\"SubscriptionName\": \"{sSubscriptionName}\",\"ResourceGroup\": \"{sResourceGroup}\"}}";
-        //                    }
-
-
-        //                    jsonResult += "]";
-
-        //                    log.LogInformation($"Cost Data: {jsonResult}");
-        //                    Console.WriteLine($"Cost Data: {jsonResult}");
-        //                    logAnalytics.Post(jsonResult);
-
-        //                    string nextLink = result.properties.nextLink.ToString();
-
-        //                    if (!string.IsNullOrEmpty(nextLink))
-        //                    {
-        //                        string skipToken = nextLink.Split('&')[1];
-        //                        await CallAPIPage(scope, skipToken, workspaceid, workspacekey, logName, log, myJson);
-        //                    }
-
-        //                    //return new OkObjectResult(jsonResult);
-        //                }
-        //                catch
-        //                { }
-
-
-        //            }
-        //        }
-        //    }
-        //}        
+            if (scopes.Contains(',', StringComparison.InvariantCultureIgnoreCase))
+            {
+                return scopes.Split(',', StringSplitOptions.RemoveEmptyEntries);
+            }
+            else
+            {
+                return new string[] { scopes };
+            }
+        }
     }
 }
